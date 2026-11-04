@@ -1,0 +1,9 @@
+For this project, create a game utilizing:
+
+SpriteBatch transforms, i.e. scrolling, zooming, screen shake, or other transformation applied to the entire batch of sprites from a SpriteBatch.Begin() call.
+Sprite rotations supplied via one of the extended SpriteBatch.Draw() methods that includes a rotation angle
+Sprite recoloring by suppling a Color argument to a SpriteBatch.Draw() method call 
+Alpha Blending between overlapping translucent (semi-transparent) sprites enabled by changing the BlendState property supplied to the SpriteBatch.Begin() call.
+Note that the last three requirements can be met by integrating an appropriate particle effect into your game.
+
+Commit your game to a github repository, create a release, and submit the release url below.

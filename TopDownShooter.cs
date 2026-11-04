@@ -5,6 +5,7 @@ using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using game_1.Agents;
 using game_1.Audio;
+using game_1.Particles;
 using game_1.Projectiles;
 using game_1.Weapons;
 
@@ -49,6 +50,40 @@ public class TopDownShooter : Game
     // well as how much is left.
     private const float LostHeartFade = 0.2f;
 
+    // Dark, as particles are drawn additively: they can only brighten what is
+    // behind them, and on anything lighter they wash out instead of glowing.
+    private static readonly Color BackgroundColor = new(22, 24, 36);
+
+    // How hard each event jolts the screen, in pixels.
+    private const float ShotShake = 1.5f;
+    private const float EnemyDeathShake = 4f;
+    private const float PlayerDamageShake = 14f;
+
+    // Muzzle flash: a tight fan of sparks along the shot.
+    private static readonly Color MuzzleColor = new(255, 200, 80);
+    private const float MuzzleSpread = 0.7f;
+    private const int MuzzleCount = 10;
+    private const float MuzzleSpeed = 260f;
+    private const float MuzzleSize = 9f;
+
+    // What any hit on a mob throws off, whether or not it survives.
+    private static readonly Color EnemyHitColor = new(255, 245, 210);
+    private const int EnemyHitCount = 10;
+    private const float EnemyHitSpeed = 180f;
+    private const float EnemyHitSize = 7f;
+
+    // The larger burst on top of that when the mob goes down.
+    private static readonly Color EnemyDeathColor = new(255, 110, 30);
+    private const int EnemyDeathCount = 36;
+    private const float EnemyDeathSpeed = 240f;
+    private const float EnemyDeathSize = 12f;
+
+    // The biggest of the lot, as losing a heart is the thing not to miss.
+    private static readonly Color PlayerDamageColor = new(255, 40, 60);
+    private const int PlayerDamageCount = 70;
+    private const float PlayerDamageSpeed = 340f;
+    private const float PlayerDamageSize = 14f;
+
     private GraphicsDeviceManager _graphics;
 
     private SpriteBatch _spriteBatch;
@@ -64,6 +99,10 @@ public class TopDownShooter : Game
     private MobManager _mobManager;
 
     private ProjectileManager _projectileManager;
+
+    private ParticleManager _particles;
+
+    private readonly ScreenShake _screenShake = new();
 
     private GameState _state = GameState.Start;
 
@@ -94,6 +133,7 @@ public class TopDownShooter : Game
         );
         _mobManager = new(GraphicsDevice);
         _projectileManager = new();
+        _particles = new(GraphicsDevice);
         _sounds = new();
 
         // Anything already held as the game opens - the Enter that launched it
@@ -141,6 +181,11 @@ public class TopDownShooter : Game
                 break;
         }
 
+        // Outside the states, so the burst and jolt from a killing blow play
+        // out over the game over screen instead of freezing on it.
+        _particles.Update(gameTime);
+        _screenShake.Update(gameTime);
+
         _previousKeyboard = keyboard;
 
         base.Update(gameTime);
@@ -148,14 +193,35 @@ public class TopDownShooter : Game
 
     protected override void Draw(GameTime gameTime)
     {
-        GraphicsDevice.Clear(Color.CornflowerBlue);
+        GraphicsDevice.Clear(BackgroundColor);
 
-        _spriteBatch.Begin();
+        Matrix shake = _screenShake.Transform;
+
+        // The world, which shakes.
+        _spriteBatch.Begin(transformMatrix: shake);
 
         if (_state == GameState.Playing)
         {
             _mobManager.Draw(gameTime, _spriteBatch);
             _projectileManager.Draw(gameTime, _spriteBatch);
+        }
+
+        // The player is on screen in every state.
+        _player.Draw(gameTime, _spriteBatch);
+
+        _spriteBatch.End();
+
+        // Particles, shaken the same so they stay put against the world, and in
+        // a batch of their own as they are the only thing blended additively.
+        _spriteBatch.Begin(blendState: BlendState.Additive, transformMatrix: shake);
+        _particles.Draw(_spriteBatch);
+        _spriteBatch.End();
+
+        // Text and hearts, on top of everything and held still to stay readable.
+        _spriteBatch.Begin();
+
+        if (_state == GameState.Playing)
+        {
             DrawRunTimer();
             DrawHealth();
         }
@@ -164,9 +230,6 @@ public class TopDownShooter : Game
             foreach ((string text, Vector2 position) in _promptLines)
                 _spriteBatch.DrawString(_font, text, position, Color.White);
         }
-
-        // The player is on screen in every state.
-        _player.Draw(gameTime, _spriteBatch);
 
         _spriteBatch.End();
 
@@ -195,9 +258,12 @@ public class TopDownShooter : Game
 
             mob.Kill();
             _sounds.PlayEnemyDeath();
+            ShowEnemyDeath(mob);
 
             _player.Touch();
             _sounds.PlayDamage();
+            _particles.Burst(_player.Position, PlayerDamageColor, PlayerDamageCount, PlayerDamageSpeed, PlayerDamageSize);
+            _screenShake.Add(PlayerDamageShake);
         }
 
         if (!_player.IsAlive)
@@ -216,7 +282,11 @@ public class TopDownShooter : Game
         // The noise follows the shot, not the key, so a press that lands on
         // the cooldown stays quiet.
         if (WasJustPressed(keyboard, Keys.Space) && _player.TryFire(_projectileManager))
+        {
             _sounds.PlayShot();
+            _particles.Cone(_player.Muzzle, _player.Rotation, MuzzleSpread, MuzzleColor, MuzzleCount, MuzzleSpeed, MuzzleSize);
+            _screenShake.Add(ShotShake);
+        }
 
         if (WasJustPressed(keyboard, Keys.Q) && _player.TryMelee(out MeleeStrike strike))
         {
@@ -230,8 +300,8 @@ public class TopDownShooter : Game
         }
     }
 
-    // Damage and the noises that go with it, in one place so a hit sounds the
-    // same however it was dealt.
+    // Damage and the noises and effects that go with it, in one place so a hit
+    // sounds and looks the same however it was dealt.
     private void Hurt(Mob mob, int damage)
     {
         // Already down: no second hit, and no second death rattle.
@@ -239,8 +309,19 @@ public class TopDownShooter : Game
 
         mob.TakeDamage(damage);
         _sounds.PlayDamage();
+        _particles.Burst(mob.Position, EnemyHitColor, EnemyHitCount, EnemyHitSpeed, EnemyHitSize);
 
-        if (!mob.IsAlive) _sounds.PlayEnemyDeath();
+        if (!mob.IsAlive)
+        {
+            _sounds.PlayEnemyDeath();
+            ShowEnemyDeath(mob);
+        }
+    }
+
+    private void ShowEnemyDeath(Mob mob)
+    {
+        _particles.Burst(mob.Position, EnemyDeathColor, EnemyDeathCount, EnemyDeathSpeed, EnemyDeathSize);
+        _screenShake.Add(EnemyDeathShake);
     }
 
     private void ResolveProjectileHits()
@@ -274,6 +355,8 @@ public class TopDownShooter : Game
         _player.Position = GraphicsDevice.Viewport.Bounds.Center.ToVector2();
         _mobManager.Reset();
         _projectileManager.Reset();
+        _particles.Reset();
+        _screenShake.Reset();
         _sounds.StartMusic();
     }
 
